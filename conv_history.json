@@ -1,12 +1,16 @@
 {
     "current_chat": "default",
     "chats": {
-        "default": [
-            {
-                "role": "user",
-                "content": "Hi"
-            }
-            
-        ]
+        "default": {
+            "name": "Default",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Hello, my name is Daniil"
+                }
+           
+            ]
+        }
+        
     }
 }
