@@ -1,4 +1,5 @@
 from ollama import OllamaClient
+from telegram_bot import run
 
 
 def main():
@@ -23,4 +24,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run()

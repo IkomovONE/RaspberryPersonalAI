@@ -1,0 +1,5 @@
+/.DS_Store
+env
+app/__pycache__/config.cpython-310.pyc
+app/__pycache__/ollama.cpython-310.pyc
+.env
