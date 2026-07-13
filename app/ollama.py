@@ -5,17 +5,24 @@ from config import OLLAMA_URL, MODEL
 
 class OllamaClient:
 
-    def ask(self, prompt: str) -> str:
+    def chat(self, messages):
 
         response = requests.post(
-            f"{OLLAMA_URL}/api/generate",
+
+            f"{OLLAMA_URL}/api/chat",
+
             json={
+
                 "model": MODEL,
-                "prompt": prompt,
+
+                "messages": messages,
+
                 "stream": False
+
             }
+
         )
 
         response.raise_for_status()
 
-        return response.json()["response"]
+        return response.json()["message"]["content"]

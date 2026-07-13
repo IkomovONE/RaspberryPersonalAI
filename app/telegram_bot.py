@@ -10,7 +10,11 @@ from config import TELEGRAM_TOKEN
 from config import AUTHORIZED_USERS
 from ollama import OllamaClient
 
-ai = OllamaClient()
+from assistant import Assistant
+
+assistant = Assistant()
+
+
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -28,7 +32,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     print(f"User: {user_message}")
 
-    response = ai.ask(user_message)
+    response = assistant.chat(user_message)
 
     print(f"AI: {response}")
 

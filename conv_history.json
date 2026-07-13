@@ -1,0 +1,12 @@
+{
+    "current_chat": "default",
+    "chats": {
+        "default": [
+            {
+                "role": "user",
+                "content": "Hi"
+            }
+            
+        ]
+    }
+}
