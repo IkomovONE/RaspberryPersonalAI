@@ -61,7 +61,7 @@ def fetch_weather() -> str:
 
     try:
         forecast_url = (
-            "https://api.open-meteo.com/v1/forecast?latitude=60.1695&longitude=24.9354&hourly=temperature_2m,precipitation,precipitation_probability,relative_humidity_2m,weather_code,wind_speed_10m&current=temperature_2m,is_day,precipitation,relative_humidity_2m,weather_code,wind_speed_10m&timezone=auto"
+            "https://api.open-meteo.com/v1/forecast?latitude=60.1695&longitude=24.9354&hourly=temperature_2m,precipitation,precipitation_probability,relative_humidity_2m,weather_code,wind_speed_10m&current=temperature_2m,is_day,precipitation,relative_humidity_2m,weather_code,wind_speed_10m&timezone=auto&forecast_days=1"
         )
         forecast_response = requests.get(forecast_url, timeout=10)
         forecast_response.raise_for_status()
