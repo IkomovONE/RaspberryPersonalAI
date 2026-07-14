@@ -17,6 +17,35 @@ from assistant import Assistant
 
 assistant = Assistant()
 
+MAX_TELEGRAM_MESSAGE_LENGTH = 4000
+
+
+def split_message(text: str, max_length: int = MAX_TELEGRAM_MESSAGE_LENGTH):
+    if len(text) <= max_length:
+        return [text]
+
+    chunks = []
+    remaining = text
+
+    while len(remaining) > max_length:
+        split_index = remaining.rfind("\n", 0, max_length)
+        if split_index == -1:
+            split_index = remaining.rfind(" ", 0, max_length)
+
+        if split_index <= 0:
+            split_index = max_length
+
+        chunk = remaining[:split_index].rstrip()
+        if chunk:
+            chunks.append(chunk)
+
+        remaining = remaining[split_index:].lstrip()
+
+    if remaining:
+        chunks.append(remaining)
+
+    return chunks
+
 
 def chat_keyboard(action="switch"):
 
@@ -144,7 +173,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     response = assistant.chat(user_message)
 
-    await update.message.reply_text(response)
+    for chunk in split_message(response):
+        await update.message.reply_text(chunk)
 
 async def button(update, context):
 
