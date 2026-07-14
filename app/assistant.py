@@ -32,6 +32,9 @@ class Assistant:
         if "current_timestamp" not in self.state:
             self.state["current_timestamp"] = ""
 
+        if "last_location" not in self.state:
+            self.state["last_location"] = None
+
         self.save()
 
     def save(self):
@@ -125,6 +128,17 @@ class Assistant:
 
         self.state[key] = value
         self.save()
+
+    def store_last_location(self, latitude, longitude, location_name=None):
+        self.state["last_location"] = {
+            "latitude": latitude,
+            "longitude": longitude,
+            "location_name": location_name,
+        }
+        self.save()
+
+    def get_last_location(self):
+        return self.state.get("last_location")
 
     def chat(self, prompt, save_to_history=True):
 

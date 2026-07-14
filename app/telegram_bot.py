@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from typing import Optional
@@ -12,7 +13,10 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 
 from telegram.ext import CallbackQueryHandler, JobQueue
 
@@ -23,6 +27,9 @@ from ollama import OllamaClient
 from assistant import Assistant
 
 assistant = Assistant()
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 MAX_TELEGRAM_MESSAGE_LENGTH = 4000
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
@@ -57,11 +64,13 @@ def split_message(text: str, max_length: int = MAX_TELEGRAM_MESSAGE_LENGTH):
     return chunks
 
 
-def fetch_weather() -> str:
+def fetch_weather(latitude: Optional[float] = None, longitude: Optional[float] = None) -> str:
 
     try:
+        latitude_value = latitude if latitude is not None else 60.1695
+        longitude_value = longitude if longitude is not None else 24.9354
         forecast_url = (
-            "https://api.open-meteo.com/v1/forecast?latitude=60.1695&longitude=24.9354&hourly=temperature_2m,precipitation,precipitation_probability,relative_humidity_2m,weather_code,wind_speed_10m&current=temperature_2m,is_day,precipitation,relative_humidity_2m,weather_code,wind_speed_10m&timezone=auto&forecast_days=1"
+            f"https://api.open-meteo.com/v1/forecast?latitude={latitude_value}&longitude={longitude_value}&hourly=temperature_2m,precipitation,precipitation_probability,relative_humidity_2m,weather_code,wind_speed_10m&current=temperature_2m,is_day,precipitation,relative_humidity_2m,weather_code,wind_speed_10m&timezone=auto&forecast_days=1"
         )
         forecast_response = requests.get(forecast_url, timeout=10)
         forecast_response.raise_for_status()
@@ -70,6 +79,37 @@ def fetch_weather() -> str:
         return forecast_data
     except Exception as exc:
         return f"Weather update unavailable right now: {exc}"
+
+
+def get_nearest_city_name(latitude: float, longitude: float) -> Optional[str]:
+    try:
+        geocoding_url = "https://geocoding-api.open-meteo.com/v1/search"
+        response = requests.get(
+            geocoding_url,
+            params={
+                "latitude": latitude,
+                "longitude": longitude,
+                "count": 1,
+                "language": "en",
+                "format": "json",
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+        data = response.json()
+        results = data.get("results", [])
+        if not results:
+            return None
+
+        result = results[0]
+        parts = [
+            result.get("name"),
+            result.get("admin1"),
+            result.get("country"),
+        ]
+        return ", ".join(part for part in parts if part)
+    except Exception:
+        return None
 
 
 def parse_weather_time(value: Optional[str], source_timezone: Optional[str] = None):
@@ -212,7 +252,15 @@ def fetch_news() -> str:
         return f"News update unavailable right now: {exc}"
 
 
-def build_context_prompt(user_message: str, *, weather_summary: str, latest_news: str, now: str, is_daily_notification: bool = False) -> str:
+def build_context_prompt(
+    user_message: str,
+    *,
+    weather_summary: str,
+    latest_news: str,
+    now: str,
+    is_daily_notification: bool = False,
+    location_name: Optional[str] = None,
+) -> str:
     if is_daily_notification:
         instruction = (
             "morning daily notification\n"
@@ -221,10 +269,16 @@ def build_context_prompt(user_message: str, *, weather_summary: str, latest_news
             "Do not invent missing details."
         )
     else:
-        instruction = "Answer using only the weather/news summary above. Do not invent missing details."
+        instruction = (
+            "Answer using only the weather/news summary above. Do not invent missing details. "
+            "If a location name is provided, mention that city in your answer."
+        )
+
+    location_context = f"Location context: {location_name}\n" if location_name else ""
 
     return (
         f"Current timestamp: {now}\n"
+        f"{location_context}"
         f"Weather broadcast (hour-by-hour summary):\n{weather_summary}\n"
         f"Latest news data: {latest_news}\n\n"
         f"{instruction}\n"
@@ -289,12 +343,61 @@ def chat_keyboard(action="switch"):
     return InlineKeyboardMarkup(keyboard)
 
 
+async def request_weather_location(update: Update, context: ContextTypes.DEFAULT_TYPE, user_message: str):
+    logger.info("Asking user for weather location")
+    context.user_data["awaiting_weather_location"] = True
+    context.user_data["pending_weather_request"] = user_message
+
+    await update.message.reply_text(
+        "Please share your current location as an attachment so I can give you the weather for the right place."
+    )
+
+
+async def process_weather_request(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user_message: str,
+    *,
+    latitude: Optional[float],
+    longitude: Optional[float],
+    location_name: Optional[str],
+):
+    now = datetime.now(ZoneInfo("Europe/Helsinki")).isoformat()
+    weather_data = fetch_weather(latitude=latitude, longitude=longitude)
+    assistant.update_global_value("weather_broadcast", weather_data)
+    assistant.update_global_value("current_timestamp", now)
+
+    weather_summary = summarize_weather_forecast(weather_data)
+    
+    latest_news = assistant.state.get("latest_news", "No news available.")
+    if not latest_news:
+        latest_news = "No news available."
+
+    context_prompt = build_context_prompt(
+        user_message,
+        weather_summary=weather_summary,
+        latest_news=latest_news,
+        now=now,
+        is_daily_notification=False,
+        location_name=location_name,
+    )
+
+    logger.info("Processing weather request for %s with coordinates %s, %s", location_name, latitude, longitude)
+    response = assistant.chat(context_prompt)
+    for chunk in split_message(response):
+        await update.message.reply_text(chunk)
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if update.message is None:
         return
 
-    user_message = update.message.text.strip()
+    if update.message.location is not None:
+        await handle_location(update, context)
+        return
+
+    user_message = (update.message.text or "").strip()
 
     # Authorization
     if update.effective_user.id != AUTHORIZED_USERS:
@@ -379,27 +482,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lower_message = user_message.lower()
 
     if "weather" in lower_message:
-        now = datetime.now(ZoneInfo("Europe/Helsinki")).isoformat()
-        weather_data = fetch_weather()
-        assistant.update_global_value("weather_broadcast", weather_data)
-        assistant.update_global_value("current_timestamp", now)
-
-        weather_summary = summarize_weather_forecast(weather_data)
-        latest_news = assistant.state.get("latest_news", "No news available.")
-        if not latest_news:
-            latest_news = "No news available."
-
-        context_prompt = build_context_prompt(
-            user_message,
-            weather_summary=weather_summary,
-            latest_news=latest_news,
-            now=now,
-            is_daily_notification=False,
-        )
-
-        response = assistant.chat(context_prompt)
-        for chunk in split_message(response):
-            await update.message.reply_text(chunk)
+        context.user_data.pop("awaiting_weather_location", None)
+        context.user_data.pop("pending_weather_request", None)
+        await request_weather_location(update, context, user_message)
         return
 
     if "news" in lower_message:
@@ -436,6 +521,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for chunk in split_message(response):
         await update.message.reply_text(chunk)
+
+async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message is None or update.message.location is None:
+        return
+
+    logger.info("Received location update from user %s", update.effective_user.id)
+
+    if update.effective_user.id != AUTHORIZED_USERS:
+        await update.message.reply_text("Sorry, this bot is private.")
+        return
+
+    if not context.user_data.get("awaiting_weather_location"):
+        logger.info("No pending weather request waiting for location")
+        return
+
+    latitude = update.message.location.latitude
+    longitude = update.message.location.longitude
+    location_name = get_nearest_city_name(latitude, longitude) or WEATHER_CITY
+
+    assistant.store_last_location(latitude, longitude, location_name)
+
+    pending_request = context.user_data.pop("pending_weather_request", None) or "Please give me the weather."
+    context.user_data.pop("awaiting_weather_location", None)
+
+    await process_weather_request(
+        update,
+        context,
+        pending_request,
+        latitude=latitude,
+        longitude=longitude,
+        location_name=location_name,
+    )
+
 
 async def button(update, context):
 
@@ -493,7 +611,7 @@ def run():
     )
     
     app.add_handler(
-        MessageHandler(filters.TEXT, handle_message)
+        MessageHandler(filters.ALL, handle_message)
     )
 
     app.job_queue.run_repeating(send_weather_notification, interval=86400, first=0)
