@@ -83,33 +83,82 @@ def fetch_weather(latitude: Optional[float] = None, longitude: Optional[float] =
 
 def get_nearest_city_name(latitude: float, longitude: float) -> Optional[str]:
     try:
-        geocoding_url = "https://geocoding-api.open-meteo.com/v1/search"
         response = requests.get(
-            geocoding_url,
+            "https://nominatim.openstreetmap.org/reverse",
+            params={
+                "lat": latitude,
+                "lon": longitude,
+                "format": "jsonv2",
+                "addressdetails": 1,
+                "zoom": 10,
+            },
+            headers={"User-Agent": "RaspberryPersonalAI/1.0"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        address = data.get("address", {})
+        candidate_keys = ["city", "town", "village", "suburb", "hamlet", "municipality", "county"]
+        for key in candidate_keys:
+            value = address.get(key)
+            if value:
+                return value
+
+        name_value = data.get("name")
+        if name_value:
+            return name_value
+
+        display_name = data.get("display_name")
+        if display_name:
+            return display_name.split(",")[0]
+    except Exception as exc:
+        logger.warning("Reverse geocoding failed for %.6f, %.6f: %s", latitude, longitude, exc)
+
+    return None
+
+
+def resolve_timezone_name(weather_data: Optional[dict] = None, *, latitude: Optional[float] = None, longitude: Optional[float] = None) -> str:
+    if weather_data and weather_data.get("timezone"):
+        return weather_data.get("timezone")
+
+    if latitude is None or longitude is None:
+        last_location = assistant.get_last_location()
+        if last_location:
+            latitude = last_location.get("latitude")
+            longitude = last_location.get("longitude")
+
+    if latitude is None or longitude is None:
+        return "Europe/Helsinki"
+
+    try:
+        response = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
             params={
                 "latitude": latitude,
                 "longitude": longitude,
-                "count": 1,
-                "language": "en",
-                "format": "json",
+                "current": "temperature_2m",
+                "timezone": "auto",
             },
             timeout=10,
         )
         response.raise_for_status()
         data = response.json()
-        results = data.get("results", [])
-        if not results:
-            return None
+        timezone_name = data.get("timezone")
+        if timezone_name:
+            return timezone_name
+    except Exception as exc:
+        logger.warning("Failed to resolve timezone for %.6f, %.6f: %s", latitude, longitude, exc)
 
-        result = results[0]
-        parts = [
-            result.get("name"),
-            result.get("admin1"),
-            result.get("country"),
-        ]
-        return ", ".join(part for part in parts if part)
+    return "Europe/Helsinki"
+
+
+def get_local_now(weather_data: Optional[dict] = None, *, latitude: Optional[float] = None, longitude: Optional[float] = None) -> str:
+    timezone_name = resolve_timezone_name(weather_data, latitude=latitude, longitude=longitude)
+    try:
+        return datetime.now(ZoneInfo(timezone_name)).isoformat()
     except Exception:
-        return None
+        return datetime.now(ZoneInfo("Europe/Helsinki")).isoformat()
 
 
 def parse_weather_time(value: Optional[str], source_timezone: Optional[str] = None):
@@ -117,12 +166,14 @@ def parse_weather_time(value: Optional[str], source_timezone: Optional[str] = No
         return None
 
     try:
+        logger.info("Parsing weather time value: %s with source timezone: %s", value, source_timezone)
         normalized = value.replace("Z", "+00:00")
         dt = datetime.fromisoformat(normalized)
         if dt.tzinfo is None:
-            tz_name = source_timezone or "GMT"
+            tz_name = source_timezone
             dt = dt.replace(tzinfo=ZoneInfo(tz_name))
-        return dt.astimezone(ZoneInfo("Europe/Helsinki"))
+            logger.info("Assuming timezone %s for naive datetime: %s", tz_name, dt)
+        return dt.astimezone(ZoneInfo(tz_name))
     except Exception:
         return None
 
@@ -150,10 +201,12 @@ def summarize_weather_forecast(weather_data: dict) -> str:
         current_is_day = current.get("is_day")
         current_time = current.get("time")
         source_timezone = weather_data.get("timezone") or weather_data.get("timezone_abbreviation") or "GMT"
+        
 
         current_dt = None
         if current_time:
             current_dt = parse_weather_time(current_time, source_timezone)
+            logger.info("Parsed current time: %s from value: %s with source timezone: %s", current_dt, current_time, source_timezone)
             current_time_str = current_dt.strftime("%I:%M %p") if current_dt else current_time
         else:
             current_time_str = "now"
@@ -182,7 +235,7 @@ def summarize_weather_forecast(weather_data: dict) -> str:
 
         summary_lines = []
         summary_lines.append(
-            f"Current weather at {current_time_str} Helsinki time: {current_temp}°C, {current_desc}, humidity {current_humidity}%, precipitation {current_precipitation} mm, wind {current_wind} km/h, {day_state}."
+            f"Current weather at {current_time_str} local time: {current_temp}°C, {current_desc}, humidity {current_humidity}%, precipitation {current_precipitation} mm, wind {current_wind} km/h, {day_state}."
         )
 
         sample_points = []
@@ -221,7 +274,7 @@ def summarize_weather_forecast(weather_data: dict) -> str:
                 parts.append(f"wind {wind_value} km/h")
             sample_points.append("; ".join(parts))
 
-        summary_lines.append("Next hours (Helsinki time): " + " | ".join(sample_points))
+        summary_lines.append("Next hours (local time): " + " | ".join(sample_points))
         return "\n".join(summary_lines)
     except Exception as exc:
         return f"Weather data unavailable: {exc}"
@@ -287,8 +340,12 @@ def build_context_prompt(
 
 
 async def send_weather_notification(context: ContextTypes.DEFAULT_TYPE):
-    now = datetime.now(ZoneInfo("Europe/Helsinki")).isoformat()
-    weather_data = fetch_weather()
+    last_location = assistant.get_last_location()
+    if last_location:
+        latitude = last_location.get("latitude")
+        longitude = last_location.get("longitude")
+    weather_data = fetch_weather(latitude=latitude, longitude=longitude)
+    now = get_local_now(weather_data)
     assistant.update_global_value("weather_broadcast", weather_data)
     assistant.update_global_value("current_timestamp", now)
 
@@ -362,8 +419,8 @@ async def process_weather_request(
     longitude: Optional[float],
     location_name: Optional[str],
 ):
-    now = datetime.now(ZoneInfo("Europe/Helsinki")).isoformat()
     weather_data = fetch_weather(latitude=latitude, longitude=longitude)
+    now = get_local_now(weather_data, latitude=latitude, longitude=longitude)
     assistant.update_global_value("weather_broadcast", weather_data)
     assistant.update_global_value("current_timestamp", now)
 
@@ -488,7 +545,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if "news" in lower_message:
-        now = datetime.now(ZoneInfo("Europe/Helsinki")).isoformat()
+        now = get_local_now()
         news_text = fetch_news()
         assistant.update_global_value("latest_news", news_text)
         assistant.update_global_value("current_timestamp", now)
@@ -528,6 +585,8 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info("Received location update from user %s", update.effective_user.id)
 
+    logger.info("User location: lat=%s, lon=%s", update.message.location.latitude, update.message.location.longitude)
+
     if update.effective_user.id != AUTHORIZED_USERS:
         await update.message.reply_text("Sorry, this bot is private.")
         return
@@ -538,7 +597,9 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     latitude = update.message.location.latitude
     longitude = update.message.location.longitude
-    location_name = get_nearest_city_name(latitude, longitude) or WEATHER_CITY
+    location_name = get_nearest_city_name(latitude, longitude)
+    if not location_name:
+        location_name = f"coordinates {latitude:.3f}, {longitude:.3f}"
 
     assistant.store_last_location(latitude, longitude, location_name)
 
