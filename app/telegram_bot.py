@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, time
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -166,13 +166,11 @@ def parse_weather_time(value: Optional[str], source_timezone: Optional[str] = No
         return None
 
     try:
-        logger.info("Parsing weather time value: %s with source timezone: %s", value, source_timezone)
         normalized = value.replace("Z", "+00:00")
         dt = datetime.fromisoformat(normalized)
         if dt.tzinfo is None:
             tz_name = source_timezone
             dt = dt.replace(tzinfo=ZoneInfo(tz_name))
-            logger.info("Assuming timezone %s for naive datetime: %s", tz_name, dt)
         return dt.astimezone(ZoneInfo(tz_name))
     except Exception:
         return None
@@ -675,7 +673,11 @@ def run():
         MessageHandler(filters.ALL, handle_message)
     )
 
-    app.job_queue.run_repeating(send_weather_notification, interval=86400, first=0)
+    
+
+    app.job_queue.run_repeating(send_weather_notification, interval=86400, first=81300)
+
+    #app.job_queue.run_daily(send_weather_notification, time=time(hour=10, minute=19))
 
     print("Telegram bot started!")
 
